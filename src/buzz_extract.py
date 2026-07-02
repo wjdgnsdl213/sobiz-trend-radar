@@ -2,8 +2,12 @@
 
 방법:
   1) soynlp WordExtractor로 사전 없이 응집도 높은 '단어'를 추출 (신조어도 포착)
-  2) kiwipiepy가 아는 단어인지 대조 — 모르면 '신조어 후보'로 표시(형태소 사전 한계를 역이용)
-  3) 주 단위 급상승 스코어로 최근 뜨는 후보를 상위에 올림
+  2) 소금빵/맛집으 같은 조사·잘림 파편 제거(끝 파편 + 접두 파편 dedup)
+  3) kiwipiepy .oov(사전 미등재)로 단어 유형 분류
+     - 신조어: OOV 형태소 포함 (왁뿌, 탕후루, 빵지순례) ← 진짜 신조어
+     - 합성어: 기존어 결합 (소금빵, 오션뷰, 흑돼지)
+     - 일반어: 사전 단일어 (디저트, 두바이)
+  4) 주 단위 급상승 스코어로 최근 뜨는 후보를 상위에 올림
 
 실행: python -m src.buzz_extract
 입력: data/raw_blog 최신 jsonl
@@ -53,20 +57,33 @@ def extract_word_scores(sentences: list[str], cfg: dict[str, Any]) -> dict[str, 
 
 
 def build_pos_analyzer():
-    """kiwipiepy 기반 판별기 2종을 만든다.
+    """kiwipiepy 기반 판별기를 만든다.
 
-    - is_all_noun: 모든 토큰이 명사면 True (조사·어미 파편 제거용)
-    - is_known: 단일 명사로 인식되면 기존 단어(신조어=False 판정용)
+    반환 analyze(word) -> (is_all_noun, word_type, last_form)
+    - is_all_noun: 모든 토큰이 명사면 True (조사·어미 파편 1차 제거용)
+    - word_type: OOV(사전 미등재) 기반 단어 유형
+        · 신조어: OOV 토큰을 하나라도 포함 (kiwi가 모르는 신생어. 예: 왁뿌, 탕후루, 빵지순례)
+        · 합성어: 2토큰 이상이며 모두 사전어 (기존어 조합. 예: 소금빵, 오션뷰, 흑돼지)
+        · 일반어: 사전에 있는 단일어 (예: 디저트, 두바이)
+    - last_form: 마지막 토큰 형태 (끝 파편 판별용)
     """
     from kiwipiepy import Kiwi
 
     kiwi = Kiwi()
 
-    def analyze(word: str) -> tuple[bool, bool]:
+    def analyze(word: str) -> tuple[bool, str, str]:
         tokens = kiwi.tokenize(word)
-        is_all_noun = bool(tokens) and all(t.tag in NOUN_TAGS for t in tokens)
-        is_known = len(tokens) == 1 and tokens[0].tag in NOUN_TAGS and tokens[0].form == word
-        return is_all_noun, is_known
+        if not tokens:
+            return False, "일반어", ""
+        is_all_noun = all(t.tag in NOUN_TAGS for t in tokens)
+        has_oov = any(t.oov for t in tokens)
+        if has_oov:
+            word_type = "신조어"        # kiwi 사전에 없는 신생 형태소 포함
+        elif len(tokens) >= 2:
+            word_type = "합성어"        # 기존어 결합 (신조어 아님)
+        else:
+            word_type = "일반어"        # 사전 단일어
+        return is_all_noun, word_type, tokens[-1].form
 
     return analyze
 
@@ -113,25 +130,44 @@ def main() -> None:
     print(f"soynlp 단어 후보 {len(word_scores)}개 추출")
     df["tokens"] = tokenize_posts(df, word_scores)
 
-    # 2) 길이·응집도·불용어 + 품사(모든 토큰 명사) 필터 — 조사·어미 파편 제거
+    # 2) 길이·응집도·불용어 + 품사(모든 토큰 명사) + 끝 파편 필터
     analyze = build_pos_analyzer()
-    pos_cache: dict[str, tuple[bool, bool]] = {}
+    trailing_stops = set(cfg.get("trailing_stopchars", []))
+    word_type_map: dict[str, str] = {}
     candidates: set[str] = set()
     for w, coh in word_scores.items():
         if not (cfg["min_length"] <= len(w) <= cfg["max_length"]):
             continue
         if coh < cfg["min_cohesion"] or w in stopwords or w.isdigit():
             continue
-        is_all_noun, is_known = analyze(w)
+        is_all_noun, word_type, last_form = analyze(w)
         if not is_all_noun:  # 조사·어미·용언 파편 제외
             continue
-        pos_cache[w] = (is_all_noun, is_known)
+        # 끝이 조사/불완전 한 글자면 파편 (맛집으, 국내여, 베이커리카)
+        if len(w) >= 2 and len(last_form) == 1 and last_form in trailing_stops:
+            continue
+        word_type_map[w] = word_type
         candidates.add(w)
-    print(f"필터 통과 후보 {len(candidates)}개 (길이·응집도·불용어·품사)")
+    print(f"필터 통과 후보 {len(candidates)}개 (길이·응집도·불용어·품사·끝파편)")
 
     # 3) 주 단위 빈도 + 급상승 스코어
     freq_df, all_weeks = weekly_doc_freq(candidates, df)
     freq_df["cohesion"] = freq_df["candidate"].map(word_scores)
+
+    # 접두 파편 제거: a가 더 긴 후보 b의 접두이고 a 빈도 대부분이 b 안에서 나오면 파편
+    ratio = cfg.get("prefix_dedup_ratio", 0.7)
+    freqmap = dict(zip(freq_df["candidate"], freq_df["total_freq"]))
+    cand_list = list(freqmap)
+    fragments: set[str] = set()
+    for a in cand_list:
+        fa = freqmap[a]
+        for b in cand_list:
+            if b != a and len(b) > len(a) and b.startswith(a) and freqmap[b] >= fa * ratio:
+                fragments.add(a)
+                break
+    if fragments:
+        freq_df = freq_df[~freq_df["candidate"].isin(fragments)].reset_index(drop=True)
+        print(f"접두 파편 {len(fragments)}개 제거 → 후보 {len(freq_df)}개")
 
     if len(all_weeks) >= 2:
         target, baseline = all_weeks[-1], all_weeks[-1 - cfg.get("baseline_weeks", 3) : -1]
@@ -143,22 +179,23 @@ def main() -> None:
     else:
         freq_df["trend_score"] = float("nan")
 
-    # 4) kiwi 미인식(단일 명사로 못 알아봄) = 신조어 후보 표시
-    freq_df["is_neologism"] = ~freq_df["candidate"].map(lambda w: pos_cache[w][1])
+    # 4) OOV 기반 단어 유형: 신조어(OOV 포함) / 합성어(기존어 결합) / 일반어(사전 단일어)
+    freq_df["word_type"] = freq_df["candidate"].map(word_type_map)
+    freq_df["is_neologism"] = freq_df["word_type"] == "신조어"  # 하위호환(진짜 신조어만)
 
     freq_df = freq_df.sort_values("total_freq", ascending=False).reset_index(drop=True)
-    cols = ["candidate", "total_freq", "cohesion", "is_neologism", "trend_score"]
+    cols = ["candidate", "total_freq", "cohesion", "word_type", "is_neologism", "trend_score"]
     freq_df[cols + all_weeks].to_csv(OUT_PATH, index=False, encoding="utf-8-sig")
     print(f"저장 → {OUT_PATH}\n")
 
+    type_tag = {"신조어": "🆕신조어", "합성어": "🧩합성어", "일반어": "  일반어"}
     top_n = cfg["top_n"]
-    print(f"■ 빈도 상위 {top_n} 후보 (신조어=kiwi 미인식):")
+    print(f"■ 빈도 상위 {top_n} 후보 (유형: 🆕신조어=OOV / 🧩합성어=기존어결합 / 일반어):")
     for _, r in freq_df.head(top_n).iterrows():
-        tag = "🆕신조어" if r["is_neologism"] else "  기존어"
-        print(f"  {tag}  {r['candidate']:<12} 빈도 {int(r['total_freq']):>4}  응집 {r['cohesion']:.2f}")
+        print(f"  {type_tag[r['word_type']]}  {r['candidate']:<12} 빈도 {int(r['total_freq']):>4}  응집 {r['cohesion']:.2f}")
 
     neo = freq_df[freq_df["is_neologism"]].sort_values("trend_score", ascending=False)
-    print(f"\n■ 급상승 신조어 후보 상위 {top_n} (trend_score 기준):")
+    print(f"\n■ 급상승 🆕신조어 후보 상위 {top_n} (OOV 포함, trend_score 기준):")
     for _, r in neo.head(top_n).iterrows():
         print(f"  {r['candidate']:<12} 빈도 {int(r['total_freq']):>4}  "
               f"이번주 {int(r['this_week_freq']):>3}  스코어 {r['trend_score']}")

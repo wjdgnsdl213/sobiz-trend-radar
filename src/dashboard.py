@@ -110,12 +110,12 @@ def engine_a(db_path: str, run_date: str) -> None:
             width="stretch",
         )
     with table_col:
-        show = df.rename(columns={
+        show = top.rename(columns={
             "keyword": "키워드", "this_week_freq": "이번주 빈도",
             "baseline_avg": "직전 평균", "trend_score": "급상승 스코어",
         })
         st.dataframe(
-            show, width="stretch", hide_index=True, height=min(560, 60 + len(df) * 35),
+            show, width="stretch", hide_index=True, height=min(560, 60 + len(top) * 35),
             column_config={
                 "급상승 스코어": st.column_config.ProgressColumn(
                     "급상승 스코어", format="%.1f",
@@ -127,10 +127,10 @@ def engine_a(db_path: str, run_date: str) -> None:
 
 def engine_b(db_path: str, run_date: str) -> None:
     st.markdown(f"#### 🍞 소비 유행 · 신조어 &nbsp;`{run_date}`", unsafe_allow_html=True)
-    st.caption("soynlp 통계로 발굴한 유행어 후보. 🆕=사전 미등재 신조어, ✅=DataLab 검색량으로 확인됨.")
+    st.caption("soynlp 통계로 발굴한 유행어 후보. 🆕신조어=사전 미등재(왁뿌·두쫀쿠), 🧩합성어=기존어 결합(소금빵·흑돼지), ✅=DataLab 검색량 확인.")
     df = query(
         db_path,
-        "SELECT candidate, total_freq, cohesion, is_neologism, trend_score, "
+        "SELECT candidate, total_freq, cohesion, word_type, is_neologism, trend_score, "
         "datalab_max_ratio, datalab_confirmed FROM buzz_snapshot "
         "WHERE run_date = ? ORDER BY trend_score DESC",
         (run_date,),
@@ -138,13 +138,14 @@ def engine_b(db_path: str, run_date: str) -> None:
     if df.empty:
         st.info("이 실행일의 버즈 스냅샷이 없습니다.")
         return
+    if "word_type" not in df.columns or df["word_type"].isna().all():
+        df["word_type"] = df["is_neologism"].map({1: "신조어", 0: "일반어"})
 
-    c1, c2, _ = st.columns([1, 1, 2])
-    only_neo = c1.checkbox("🆕 신조어만", value=False)
+    c1, c2, c3 = st.columns([2, 1, 1])
+    types = c1.multiselect("단어 유형", ["신조어", "합성어", "일반어"],
+                           default=["신조어", "합성어"])
     only_confirmed = c2.checkbox("✅ DataLab 확인만", value=False)
-    view = df.copy()
-    if only_neo:
-        view = view[view["is_neologism"] == 1]
+    view = df[df["word_type"].isin(types)] if types else df
     if only_confirmed:
         view = view[view["datalab_confirmed"] == 1]
     if view.empty:
@@ -165,15 +166,16 @@ def engine_b(db_path: str, run_date: str) -> None:
             width="stretch",
         )
     with table_col:
-        show = view.assign(
-            신조어=view["is_neologism"].map({1: "🆕", 0: ""}),
-            확인=view["datalab_confirmed"].map({1: "✅", 0: ""}),
+        type_badge = {"신조어": "🆕신조어", "합성어": "🧩합성어", "일반어": "일반어"}
+        show = top.assign(
+            유형=top["word_type"].map(type_badge),
+            확인=top["datalab_confirmed"].map({1: "✅", 0: ""}).fillna(""),
         ).rename(columns={
             "candidate": "후보", "total_freq": "빈도", "cohesion": "응집도",
             "trend_score": "급상승 스코어", "datalab_max_ratio": "DataLab 최고지수",
-        })[["후보", "신조어", "확인", "빈도", "응집도", "급상승 스코어", "DataLab 최고지수"]]
+        })[["후보", "유형", "확인", "빈도", "응집도", "급상승 스코어", "DataLab 최고지수"]]
         st.dataframe(
-            show, width="stretch", hide_index=True, height=min(560, 60 + len(view) * 35),
+            show, width="stretch", hide_index=True, height=min(560, 60 + len(top) * 35),
             column_config={
                 "급상승 스코어": st.column_config.ProgressColumn(
                     "급상승 스코어", format="%.1f",
@@ -225,12 +227,13 @@ def cross_region(db_path: str, run_date: str) -> None:
                                   alt.Tooltip("cooccur", title="공기 횟수")])
         st.altair_chart(chart, width="stretch")
     with table_col:
-        show = view.assign(**{"지역 내 비중%": (view["share_in_region"] * 100)}).rename(columns={
+        table_view = view.head(top_n)  # 차트와 동일하게 상위 N개만 (표가 너무 길어지지 않도록)
+        show = table_view.assign(**{"지역 내 비중%": (table_view["share_in_region"] * 100)}).rename(columns={
             "region": "지역", "term": "음식/유행어", "cooccur": "공기 횟수",
             "region_total": "지역 문서수",
         })[["지역", "음식/유행어", "공기 횟수", "지역 문서수", "지역 내 비중%"]]
         st.dataframe(
-            show, width="stretch", hide_index=True, height=min(560, 60 + len(view) * 35),
+            show, width="stretch", hide_index=True, height=min(560, 60 + len(table_view) * 35),
             column_config={
                 "공기 횟수": st.column_config.ProgressColumn(
                     "공기 횟수", format="%d",

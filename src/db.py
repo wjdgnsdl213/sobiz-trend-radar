@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS buzz_snapshot (
     candidate         TEXT,
     total_freq        INTEGER,
     cohesion          REAL,
+    word_type         TEXT,
     is_neologism      INTEGER,
     trend_score       REAL,
     datalab_max_ratio REAL,
@@ -105,6 +106,10 @@ def get_conn(path: str) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    # 기존 DB 마이그레이션: 누락 컬럼 추가 (스키마 변경 하위호환)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(buzz_snapshot)")]
+    if "word_type" not in cols:
+        conn.execute("ALTER TABLE buzz_snapshot ADD COLUMN word_type TEXT")
     conn.commit()
 
 
@@ -141,8 +146,15 @@ def ingest_raw(conn: sqlite3.Connection, path: Path, table: str) -> int:
     return cur.rowcount  # 새로 추가된(무시되지 않은) 건수
 
 
+def _clear_run(conn: sqlite3.Connection, table: str, run_date: str) -> None:
+    """스냅샷 재적재를 완전 멱등하게 만든다: 해당 실행일 행을 먼저 비운다.
+    (INSERT OR REPLACE만 쓰면 이번에 사라진 행이 잔존하는 문제 방지)"""
+    conn.execute(f"DELETE FROM {table} WHERE run_date = ?", (run_date,))
+
+
 def ingest_filter(conn: sqlite3.Connection, path: Path, run_date: str) -> int:
     df = pd.read_parquet(path)
+    _clear_run(conn, "filter_results", run_date)
     rows = [
         (run_date, r["link"], float(r["similarity"]), int(bool(r["relevant"])),
          int(bool(r["is_dup"])), int(bool(r["kept"])))
@@ -159,6 +171,7 @@ def ingest_filter(conn: sqlite3.Connection, path: Path, run_date: str) -> int:
 
 def ingest_trend(conn: sqlite3.Connection, path: Path, run_date: str) -> int:
     df = pd.read_csv(path)
+    _clear_run(conn, "trend_snapshot", run_date)
     rows = [
         (run_date, r["keyword"], int(r["this_week_freq"]),
          float(r["baseline_avg"]), float(r["trend_score"]))
@@ -174,14 +187,29 @@ def ingest_trend(conn: sqlite3.Connection, path: Path, run_date: str) -> int:
     return len(rows)
 
 
-def ingest_buzz(conn: sqlite3.Connection, path: Path, run_date: str) -> int:
-    """buzz_validated.csv(있으면) 또는 buzz_candidates.csv를 적재한다."""
+def ingest_buzz(conn: sqlite3.Connection, path: Path, run_date: str,
+                validated_path: Path | None = None) -> int:
+    """전체 buzz 후보를 적재하고, DataLab 검증(상위 일부)이 있으면 병합한다.
+
+    검증본은 상위 N개만 담기므로, 전체 후보(신조어 포함)를 base로 두고
+    DataLab 컬럼만 left-join 해야 신조어가 대시보드에서 누락되지 않는다.
+    """
     df = pd.read_csv(path)
+    _clear_run(conn, "buzz_snapshot", run_date)
+    if validated_path is not None and validated_path.exists():
+        v = pd.read_csv(validated_path)
+        if "datalab_max_ratio" in v.columns:
+            df = df.merge(
+                v[["candidate", "datalab_max_ratio", "datalab_confirmed"]],
+                on="candidate", how="left",
+            )
     has_datalab = "datalab_max_ratio" in df.columns
+    has_wtype = "word_type" in df.columns
     rows = []
     for _, r in df.iterrows():
         rows.append((
             run_date, r["candidate"], int(r["total_freq"]), float(r["cohesion"]),
+            r["word_type"] if has_wtype else None,
             int(bool(r["is_neologism"])),
             None if pd.isna(r["trend_score"]) else float(r["trend_score"]),
             float(r["datalab_max_ratio"]) if has_datalab and pd.notna(r["datalab_max_ratio"]) else None,
@@ -189,8 +217,8 @@ def ingest_buzz(conn: sqlite3.Connection, path: Path, run_date: str) -> int:
         ))
     conn.executemany(
         "INSERT OR REPLACE INTO buzz_snapshot "
-        "(run_date, candidate, total_freq, cohesion, is_neologism, trend_score, "
-        "datalab_max_ratio, datalab_confirmed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "(run_date, candidate, total_freq, cohesion, word_type, is_neologism, trend_score, "
+        "datalab_max_ratio, datalab_confirmed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         rows,
     )
     conn.commit()
@@ -199,6 +227,7 @@ def ingest_buzz(conn: sqlite3.Connection, path: Path, run_date: str) -> int:
 
 def ingest_cross(conn: sqlite3.Connection, path: Path, run_date: str) -> int:
     df = pd.read_csv(path)
+    _clear_run(conn, "cross_region", run_date)
     if df.empty:
         return 0
     rows = [
@@ -238,11 +267,11 @@ def ingest_all(conn: sqlite3.Connection, run_date: str) -> None:
     if trend.exists():
         n = ingest_trend(conn, trend, run_date)
         print(f"  트렌드 스코어: {n}건 스냅샷({run_date})")
-    buzz = buzz_val if buzz_val.exists() else (buzz_cand if buzz_cand.exists() else None)
-    if buzz:
-        n = ingest_buzz(conn, buzz, run_date)
-        src = "검증본" if buzz is buzz_val else "후보(미검증)"
-        print(f"  버즈 {src}: {n}건 스냅샷({run_date})")
+    if buzz_cand.exists():
+        n = ingest_buzz(conn, buzz_cand, run_date,
+                        buzz_val if buzz_val.exists() else None)
+        tag = "DataLab 병합" if buzz_val.exists() else "미검증"
+        print(f"  버즈 후보 전체({tag}): {n}건 스냅샷({run_date})")
     if cross.exists():
         n = ingest_cross(conn, cross, run_date)
         print(f"  지역×음식 크로스: {n}건 스냅샷({run_date})")

@@ -57,7 +57,7 @@ def load_terms(cfg: dict[str, Any]) -> list[str]:
     지역 특색을 드러내는 '무엇이 함께 뜨는가'만 남기기 위해 다음을 배제한다:
       - 지역명 자체 및 지역명을 부분포함한 복합어(부산핫플, 강남역 등)
       - 일반 카테고리/마케팅어(term_stopwords)
-      - only_neologism이면 신조어 후보(kiwi 미등재)만 사용 → 일반어 자동 제거
+      - include_word_types 밖의 유형(기본: 일반어 제외, 합성어·신조어만 사용)
     """
     if cfg["term_source"] != "buzz":
         sys.exit(f"지원하지 않는 term_source: {cfg['term_source']}")
@@ -66,8 +66,9 @@ def load_terms(cfg: dict[str, Any]) -> list[str]:
         sys.exit("buzz_candidates.csv 없음. 먼저 python -m src.buzz_extract 를 실행하세요.")
 
     df = pd.read_csv(path)
-    if cfg.get("only_neologism") and "is_neologism" in df.columns:
-        df = df[df["is_neologism"].astype(bool)]
+    include = set(cfg.get("include_word_types", ["신조어", "합성어"]))
+    if "word_type" in df.columns:
+        df = df[df["word_type"].isin(include)]
 
     regions = cfg["regions"]
     stopwords = set(cfg.get("term_stopwords", []))
