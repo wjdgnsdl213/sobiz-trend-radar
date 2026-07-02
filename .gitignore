@@ -1,0 +1,22 @@
+# 환경 변수 (API 키)
+.env
+
+# 데이터 산출물 (폴더 구조만 유지)
+data/**
+!data/**/
+!data/**/.gitkeep
+
+# 모델 캐시
+models/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

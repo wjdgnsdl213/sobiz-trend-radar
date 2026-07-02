@@ -1,0 +1,101 @@
+# news-keyword-poc 하이퍼파라미터 설정
+# 모든 튜닝 가능한 값은 이 파일에서 관리한다 (코드 하드코딩 금지)
+
+collect:
+  queries:
+    - 소상공인
+    - 자영업
+    - 외식업 트렌드
+    - 상권
+  weeks: 4              # 최근 N주 기사만 수집
+  max_per_query: 1000   # 쿼리당 최대 수집 건수 (네이버 API start 상한)
+  sort: date            # date(최신순) | sim(정확도순)
+
+filter:
+  model: jhgan/ko-sroberta-multitask   # 한국어 문장 임베딩 모델
+  seed_path: seeds/seed_sentences.txt
+  threshold: 0.50       # 시드 centroid와 코사인 유사도 컷 (2026-07-02 엔진A 개선: 시드 확장 후 재튜닝, 0.50에서 precision 92% recall 83% F1 0.875 최대)
+  dedup_threshold: 0.92 # near-duplicate 제거 컷 (보도자료 신디케이션 대응): 문서 임베딩 코사인 이 값 이상이면 중복으로 간주
+
+extract:
+  top_n: 20             # 최종 리포트에 쓸 상위 키워드 수
+  per_doc_top_n: 5      # 문서당 추출할 키워드 수 (KeyBERT)
+  keyphrase_ngram_max: 2  # 연속 명사 결합 최대 길이 (예: "배달 수수료")
+  stopwords:            # 상투어 — 키워드 후보에서 제외
+    - 매출
+    - 지원
+    - 정책
+    - 사업
+    - 대표
+    - 소상공인
+    - 자영업
+    - 자영업자
+    - 정부
+    - 지역
+    - 올해
+    - 지난해
+    - 관계자
+    # 대기업·금융기관 홍보 노이즈 (2026-07-02 평가: 필터 통과 키워드 상위권 오염)
+    # 주의: 형태소 분석기가 토큰 단위로 쪼개므로 붙여쓴 복합어가 아니라 개별 토큰으로 등록
+    - 금융
+    - 미소
+    - 재단
+    - 포용
+    - 백화점
+    - 아울렛
+    - 스토어
+    - 은행
+
+trend:
+  min_weekly_freq: 3    # 주 3회 미만 등장 키워드 제외
+  baseline_weeks: 3     # 급상승 스코어 분모: 이전 N주 평균 + 1
+
+evaluate:
+  labels_path: data/labels/labels.csv
+  sample_size: 100      # 수동 라벨링 샘플 수
+  random_seed: 42       # 샘플링 재현용 시드
+
+# ── 엔진 B: 블로그 기반 신조어/소비 유행 트렌드 발굴 ────────────────
+# 뉴스는 유행의 후행 지표라, 소비 유행어(예: 신메뉴명)는 블로그에서 통계 기반으로 발굴한다.
+buzz:
+  queries:              # 소비 트렌드가 드러나는 블로그 검색어
+    - 요즘 유행 디저트
+    - 신상 카페
+    - 핫플 맛집
+    - 요즘 뜨는 음식
+    - 인기 메뉴 맛집
+  weeks: 4
+  max_per_query: 1000
+  sort: date
+  # soynlp WordExtractor 신조어 후보 필터
+  min_frequency: 10     # 최소 등장 횟수
+  min_cohesion: 0.15    # 응집도(cohesion_forward) 하한 — 실제 '단어'일 확률
+  min_length: 2         # 후보 최소 글자 수
+  max_length: 8         # 후보 최대 글자 수
+  top_n: 30             # 리포트에 낼 신조어 후보 수
+  stopwords:            # 블로그 상투어/광고어/메타 노이즈
+    - 오늘
+    - 정말
+    - 진짜
+    - 요즘
+    - 방문
+    - 후기
+    - 추천
+    - 포스팅
+    - 협찬
+    - 제공
+    - 원고
+    - 서이추
+    - 서이추환영
+    - 환영
+    - 운영시간
+    - 정기휴무
+    - 국내여행
+
+# ── 엔진 B 검증: DataLab 검색어트렌드 API 교차 검증 ──────────────────────
+# buzz_extract가 발굴한 후보가 실제 검색 급등 추세인지 네이버 데이터랩으로 확인한다.
+buzz_validate:
+  top_n_to_check: 20    # buzz_candidates.csv에서 trend_score 상위 N개를 검증
+  weeks: 8              # DataLab 조회 기간 (buzz 수집 4주 + 이전 4주 baseline)
+  time_unit: week       # 시계열 단위: week | month
+  spike_threshold: 10   # 조회 기간 내 최고 상대지수(0-100)가 이 값 이상이면 확인됨
