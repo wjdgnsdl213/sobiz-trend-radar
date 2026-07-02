@@ -127,7 +127,7 @@ def engine_a(db_path: str, run_date: str) -> None:
 
 def engine_b(db_path: str, run_date: str) -> None:
     st.markdown(f"#### 🍞 소비 유행 · 신조어 &nbsp;`{run_date}`", unsafe_allow_html=True)
-    st.caption("soynlp 통계로 발굴한 유행어 후보. 🆕신조어=사전 미등재(왁뿌·두쫀쿠), 🧩합성어=기존어 결합(소금빵·흑돼지), ✅=DataLab 검색량 확인.")
+    st.caption("soynlp 통계로 발굴한 유행어 후보. 🆕미등재어=사전에 없는 단어(신조어 두쫀쿠·외래어 에그타르트 혼재, 사람 확인 필요), 🧩합성어=기존어 결합(소금빵·흑돼지), ✅=DataLab 검색량 확인.")
     df = query(
         db_path,
         "SELECT candidate, total_freq, cohesion, word_type, is_neologism, trend_score, "
@@ -139,11 +139,11 @@ def engine_b(db_path: str, run_date: str) -> None:
         st.info("이 실행일의 버즈 스냅샷이 없습니다.")
         return
     if "word_type" not in df.columns or df["word_type"].isna().all():
-        df["word_type"] = df["is_neologism"].map({1: "신조어", 0: "일반어"})
+        df["word_type"] = df["is_neologism"].map({1: "미등재어", 0: "일반어"})
 
     c1, c2, c3 = st.columns([2, 1, 1])
-    types = c1.multiselect("단어 유형", ["신조어", "합성어", "일반어"],
-                           default=["신조어", "합성어"])
+    types = c1.multiselect("단어 유형", ["미등재어", "합성어", "일반어"],
+                           default=["미등재어", "합성어"])
     only_confirmed = c2.checkbox("✅ DataLab 확인만", value=False)
     view = df[df["word_type"].isin(types)] if types else df
     if only_confirmed:
@@ -166,7 +166,7 @@ def engine_b(db_path: str, run_date: str) -> None:
             width="stretch",
         )
     with table_col:
-        type_badge = {"신조어": "🆕신조어", "합성어": "🧩합성어", "일반어": "일반어"}
+        type_badge = {"미등재어": "🆕미등재어", "합성어": "🧩합성어", "일반어": "일반어"}
         show = top.assign(
             유형=top["word_type"].map(type_badge),
             확인=top["datalab_confirmed"].map({1: "✅", 0: ""}).fillna(""),
