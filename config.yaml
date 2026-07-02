@@ -1,6 +1,11 @@
 # news-keyword-poc 하이퍼파라미터 설정
 # 모든 튜닝 가능한 값은 이 파일에서 관리한다 (코드 하드코딩 금지)
 
+# ── 이력 DB: 주간 반복 수집분을 누적해 트렌드 baseline을 강화한다 ──────────
+# raw 기사/포스트는 링크 기준 최초 수집분을 보존(first_seen), 파생물은 실행일별 스냅샷.
+db:
+  path: data/trends.db
+
 collect:
   queries:
     - 소상공인

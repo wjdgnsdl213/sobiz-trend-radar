@@ -42,6 +42,7 @@
 ```
 
 - **공통 원칙**: 제목+요약문만 사용(본문 크롤링 금지), 모든 하이퍼파라미터는 `config.yaml`에서 관리, 각 단계는 독립 실행 가능하고 중간 산출물을 `data/`에 저장
+- **이력 DB 계층(`db.py`)**: 양 엔진 산출물을 SQLite(`data/trends.db`)에 누적. raw는 링크 기준 최초 수집분 보존, 파생물은 실행일별 스냅샷 → 주간 반복 실행으로 트렌드 baseline이 시간에 따라 강화됨. 파이프라인 스크립트를 건드리지 않는 적재 계층
 - **왜 두 기법인가**: 뉴스는 사전에 있는 정형 어휘라 임베딩 필터가 잘 맞지만, 소비 유행어는 사전에 없는 신조어라 형태소 분석이 놓친다 → soynlp 통계 추출로 우회하고 DataLab으로 실재 여부를 검증
 
 ## PoC가 증명해야 할 것
@@ -91,6 +92,18 @@ buzz_collect → buzz_extract → buzz_validate
 | 신조어 발굴 | `python -m src.buzz_extract` | soynlp 통계 추출 + kiwipiepy 신조어 판별 + 급상승 스코어 |
 | DataLab 검증 | `python -m src.buzz_validate` | 네이버 DataLab 검색어트렌드로 발굴 후보 교차 검증 |
 
+**이력 DB (양 엔진 공통):**
+```
+db (적재 계층)
+```
+
+| 실행 | 설명 |
+|---|---|
+| `python -m src.db --ingest` | 최신 산출물을 SQLite(`data/trends.db`)에 누적 적재 |
+| `python -m src.db --summary` | 누적 현황(원본 건수·수집일 범위·스냅샷 수) 출력 |
+
+주간 반복 실행 시 raw 기사/포스트가 링크 기준으로 누적(최초 수집분 보존)되어, 네이버 API의 1,000건 상한·날짜범위 지정 불가 한계를 시간이 해결한다. 필터·트렌드·버즈 파생물은 실행일별 스냅샷으로 쌓여 대시보드 소스가 된다.
+
 ## 설치 및 실행
 
 ```bash
@@ -118,13 +131,14 @@ python -m src.collect
 ├── CLAUDE.md
 ├── README.md
 ├── .env.example               # NAVER_CLIENT_ID, NAVER_CLIENT_SECRET
-├── config.yaml                # 쿼리, threshold, 불용어 등 하이퍼파라미터 (collect/filter/extract/trend/evaluate/buzz)
+├── config.yaml                # 하이퍼파라미터 (db/collect/filter/extract/trend/evaluate/buzz/buzz_validate)
 ├── requirements.txt
 ├── data/
 │   ├── raw/                   # 뉴스 수집 원본 (jsonl)
 │   ├── raw_blog/              # 블로그 수집 원본 (jsonl)
 │   ├── processed/             # 필터링·키워드·트렌드·신조어 산출물
-│   └── labels/                # 수동 라벨 100건 (csv)
+│   ├── labels/                # 수동 라벨 100건 (csv)
+│   └── trends.db              # 이력 DB (SQLite, 주간 누적 — gitignore)
 ├── src/
 │   ├── collect.py             # [A] 네이버 뉴스 검색 API 수집
 │   ├── filter.py              # [A] 임베딩 관련성 필터 + near-duplicate 제거
@@ -133,7 +147,8 @@ python -m src.collect
 │   ├── evaluate.py            # [A] precision/recall 평가, threshold 스윕, 리포트 생성
 │   ├── buzz_collect.py        # [B] 네이버 블로그 검색 API 수집
 │   ├── buzz_extract.py        # [B] soynlp 신조어 추출 + kiwi 판별 + 급상승 스코어
-│   └── buzz_validate.py       # [B] DataLab 검색어트렌드 API로 발굴 후보 교차 검증
+│   ├── buzz_validate.py       # [B] DataLab 검색어트렌드 API로 발굴 후보 교차 검증
+│   └── db.py                  # [공통] 산출물을 SQLite 이력 DB에 누적 적재
 ├── seeds/
 │   └── seed_sentences.txt     # [A] 소상공인 사업환경 시드 문장 20개
 └── reports/
