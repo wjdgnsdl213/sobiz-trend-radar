@@ -33,10 +33,10 @@
 │        ↓ doc_keywords.parquet  │        │   └ DataLab 검색어트렌드로    │
 │  trend.py                      │        │     후보 교차 검증(발굴→검증) │
 │   └ 주 단위 급상승 스코어      │        │        ↓ buzz_validated.csv   │
-│        ↓ trend_scores.csv      │        │                               │
-│  evaluate.py                   │        └───────────────────────────────┘
-│   └ 수동라벨 100건 precision/  │
-│     recall + threshold 스윕    │
+│        ↓ trend_scores.csv      │        │  cross_region.py              │
+│  evaluate.py                   │        │   └ gazetteer 지역×음식 공기  │
+│   └ 수동라벨 100건 precision/  │        │        ↓ cross_region.csv     │
+│     recall + threshold 스윕    │        └───────────────────────────────┘
 │        ↓ reports/poc_report.md │
 └────────────────────────────────┘
 ```
@@ -83,7 +83,7 @@ collect → filter → extract → trend → evaluate
 
 **엔진 B (블로그):**
 ```
-buzz_collect → buzz_extract → buzz_validate
+buzz_collect → buzz_extract → buzz_validate → cross_region
 ```
 
 | 단계 | 실행 | 설명 |
@@ -91,6 +91,7 @@ buzz_collect → buzz_extract → buzz_validate
 | 수집 | `python -m src.buzz_collect` | 네이버 블로그 검색 API, 최근 4주, 제목+요약문만 |
 | 신조어 발굴 | `python -m src.buzz_extract` | soynlp 통계 추출 + kiwipiepy 신조어 판별 + 급상승 스코어 |
 | DataLab 검증 | `python -m src.buzz_validate` | 네이버 DataLab 검색어트렌드로 발굴 후보 교차 검증 |
+| 지역×음식 크로스 | `python -m src.cross_region` | gazetteer 지역 사전 × 버즈 후보 공기 빈도 (상권 특색 신호) |
 
 **이력 DB (양 엔진 공통):**
 ```
@@ -138,6 +139,7 @@ python -m streamlit run src/dashboard.py
 - **개요**: 원본 누적 건수·수집일 범위·실행 횟수
 - **엔진 A**: 실행일별 급상승 정책·사업환경 키워드 (막대그래프 + 표)
 - **엔진 B**: 신조어/유행 후보 (신조어만·DataLab 확인만 필터, DataLab 최고지수 표시)
+- **지역×음식**: 상권별 메뉴/유행 공기 조합 (지역 선택, 공기 빈도순·지역 특색순 전환)
 - **추이**: 실행 회차가 2회 이상 누적되면 키워드·후보별 급상승 스코어 추세선
 
 실행일은 사이드바에서 선택한다. 주간 배치가 쌓일수록 추이 탭이 풍부해진다.
@@ -186,6 +188,7 @@ python -m src.collect
 │   ├── buzz_collect.py        # [B] 네이버 블로그 검색 API 수집
 │   ├── buzz_extract.py        # [B] soynlp 신조어 추출 + kiwi 판별 + 급상승 스코어
 │   ├── buzz_validate.py       # [B] DataLab 검색어트렌드 API로 발굴 후보 교차 검증
+│   ├── cross_region.py        # [B] gazetteer 기반 지역×음식 공기 빈도 분석
 │   ├── db.py                  # [공통] 산출물을 SQLite 이력 DB에 누적 적재
 │   ├── run_pipeline.py        # [공통] 수집→처리→적재 전체 배치 오케스트레이터
 │   └── dashboard.py           # [공통] Streamlit 대시보드 (이력 DB 시각화)
@@ -194,13 +197,15 @@ python -m src.collect
 │   └── seed_sentences.txt     # [A] 소상공인 사업환경 시드 문장 20개
 └── reports/
     ├── poc_report.md          # [A] 엔진 A 결과 리포트 (자동 생성)
-    └── buzz_report.md         # [B] 엔진 B 결과 리포트
+    ├── buzz_report.md         # [B] 엔진 B 신조어 발굴 리포트
+    └── cross_region_report.md # [B] 지역×음식 크로스 분석 리포트
 ```
 
 ## 알려진 한계
 
 - **엔진 A 신조어 미인식**: kiwipiepy 사전 한계로 뉴스+형태소 조합은 최신 신조어를 놓친다. → 소비 유행어는 엔진 B(블로그+통계 추출)가 담당한다.
 - **엔진 B 광고/메타 노이즈**: 블로그는 체험단·협찬·업소정보("서이추환영", "운영시간") 노이즈가 많다. 불용어·품사 필터로 상당 부분 제거하나 상업적 편향은 남는다. 신조어 플래그는 참고용이며 최종 선별은 수동 검토가 필요하다.
+- **지역×음식 크로스 한계**: term 어휘를 버즈 후보에서 가져오므로 soynlp 파편(예: "맛집으", "베이커리카")이 일부 섞인다. 지역 사전은 gazetteer라 미등록 신생 상권은 config에 추가해야 잡힌다. 부분문자열 매칭이라 동음 지명 오탐 여지도 있어, 지역 내 비중(distinctiveness)을 함께 봐야 한다.
 - **제목+요약문만 사용**: 저작권 리스크로 본문 크롤링을 하지 않으므로, 본문에만 등장하는 키워드는 잡히지 않는다.
 - **네이버 API 1,000건 상한**: 쿼리당 최대 1,000건까지만 페이징 가능하고 날짜 범위 지정이 불가능하다. 기사량이 많은 쿼리는 1,000건이 최근 1~2일치로 소진되어 트렌드 스코어가 대상 주로 편중된다. → 주간 배치로 이력 DB에 누적하면 시간이 지날수록 완화된다(단, 과거 백필은 불가).
 
@@ -213,7 +218,7 @@ PoC 검증(엔진 A precision 92.1%, 엔진 B 신조어 10개+ 발굴)을 마치
 | 1. DB 연동 + 이력 관리 | ✅ | `db.py` — 주간 수집분 누적으로 baseline 강화 |
 | 2. 수집 스케줄러 | ✅ | `run_pipeline.py` + `run_weekly.bat` + 작업 스케줄러 |
 | 3. 대시보드 | ✅ | `dashboard.py` — Streamlit 시각화 |
-| 4. NER 지역×음식 크로스 분석 | ⬜ | "성수동 × 소금빵"처럼 상권별 유행 조합 추출 |
+| 4. 지역×음식 크로스 분석 | ✅ | `cross_region.py` — gazetteer 기반 (전포×카페거리, 제주×흑돼지 등) |
 | 5. 분류기 fine-tuning | ⬜ | 임베딩 필터가 이미 목표 초과라 우선순위 최하 |
 
-추가 확장 후보: 수집 소스 다변화(빅카인즈 API — 날짜 범위·과거 데이터, 언론사 RSS), 광고·체험단 포스팅 분류기로 엔진 B 상업적 편향 제거.
+추가 확장 후보: 수집 소스 다변화(빅카인즈 API — 날짜 범위·과거 데이터, 언론사 RSS), 광고·체험단 포스팅 분류기로 엔진 B 상업적 편향 제거, 크로스 분석 term 어휘 정제(soynlp 파편 제거).

@@ -123,6 +123,45 @@ def engine_b(db_path: str, run_date: str) -> None:
     st.dataframe(show, use_container_width=True, hide_index=True)
 
 
+def cross_region(db_path: str, run_date: str) -> None:
+    st.subheader(f"🗺️ 지역 × 음식 크로스  ({run_date})")
+    df = query(
+        db_path,
+        "SELECT region, term, cooccur, region_total, share_in_region "
+        "FROM cross_region WHERE run_date = ? ORDER BY cooccur DESC",
+        (run_date,),
+    )
+    if df.empty:
+        st.info("이 실행일의 크로스 스냅샷이 없습니다. `python -m src.cross_region` 실행 후 DB 적재가 필요합니다.")
+        return
+
+    st.caption("어느 상권에서 어떤 메뉴/유행어가 함께 언급되는가 (블로그 공기 빈도). "
+               "지역 내 비중이 높을수록 그 상권의 시그니처 신호.")
+
+    regions = sorted(df["region"].unique())
+    pick = st.multiselect("지역 선택 (미선택 시 전체)", regions, default=[])
+    view = df[df["region"].isin(pick)] if pick else df
+
+    mode = st.radio("정렬", ["공기 빈도순", "지역 특색순(비중)"], horizontal=True)
+    view = view.sort_values(
+        "cooccur" if mode.startswith("공기") else "share_in_region", ascending=False
+    )
+
+    top_n = st.slider("표시 개수", 5, 50, 25, key="cross_topn")
+    top = view.head(top_n).copy()
+    top["조합"] = top["region"] + " × " + top["term"]
+    metric = "cooccur" if mode.startswith("공기") else "share_in_region"
+    st.bar_chart(top.set_index("조합")[metric], height=400)
+
+    st.dataframe(
+        view.rename(columns={
+            "region": "지역", "term": "음식/유행어", "cooccur": "공기 횟수",
+            "region_total": "지역 문서수", "share_in_region": "지역 내 비중",
+        }),
+        use_container_width=True, hide_index=True,
+    )
+
+
 def timeseries(db_path: str) -> None:
     """실행 회차가 2회 이상이면 키워드/후보별 급상승 스코어 추이를 그린다."""
     st.subheader("📈 실행 회차별 추이")
@@ -180,11 +219,15 @@ def main() -> None:
     run_date = st.sidebar.selectbox("실행일 선택", all_runs)
     st.sidebar.caption(f"총 {len(all_runs)}개 실행일 누적")
 
-    tab_a, tab_b, tab_ts = st.tabs(["엔진 A · 정책 키워드", "엔진 B · 소비 유행", "추이"])
+    tab_a, tab_b, tab_x, tab_ts = st.tabs(
+        ["엔진 A · 정책 키워드", "엔진 B · 소비 유행", "지역 × 음식", "추이"]
+    )
     with tab_a:
         engine_a(db_path, run_date)
     with tab_b:
         engine_b(db_path, run_date)
+    with tab_x:
+        cross_region(db_path, run_date)
     with tab_ts:
         timeseries(db_path)
 

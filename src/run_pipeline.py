@@ -36,6 +36,7 @@ ENGINE_B = [
     ("buzz_collect", "블로그 수집"),
     ("buzz_extract", "신조어 발굴"),
     ("buzz_validate", "DataLab 교차 검증"),
+    ("cross_region", "지역×음식 크로스 분석"),
 ]
 
 

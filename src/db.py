@@ -84,6 +84,17 @@ CREATE TABLE IF NOT EXISTS buzz_snapshot (
     datalab_confirmed INTEGER,
     PRIMARY KEY (run_date, candidate)
 );
+
+-- 지역×음식 크로스 분석 (실행일별 스냅샷)
+CREATE TABLE IF NOT EXISTS cross_region (
+    run_date        TEXT,
+    region          TEXT,
+    term            TEXT,
+    cooccur         INTEGER,
+    region_total    INTEGER,
+    share_in_region REAL,
+    PRIMARY KEY (run_date, region, term)
+);
 """
 
 
@@ -186,6 +197,25 @@ def ingest_buzz(conn: sqlite3.Connection, path: Path, run_date: str) -> int:
     return len(rows)
 
 
+def ingest_cross(conn: sqlite3.Connection, path: Path, run_date: str) -> int:
+    df = pd.read_csv(path)
+    if df.empty:
+        return 0
+    rows = [
+        (run_date, r["region"], r["term"], int(r["cooccur"]),
+         int(r["region_total"]), float(r["share_in_region"]))
+        for _, r in df.iterrows()
+    ]
+    conn.executemany(
+        "INSERT OR REPLACE INTO cross_region "
+        "(run_date, region, term, cooccur, region_total, share_in_region) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
 def ingest_all(conn: sqlite3.Connection, run_date: str) -> None:
     """존재하는 최신 산출물을 자동 탐지해 적재한다. 없는 단계는 건너뛴다."""
     news = _latest("data/raw", "news_*.jsonl")
@@ -194,6 +224,7 @@ def ingest_all(conn: sqlite3.Connection, run_date: str) -> None:
     trend = Path("data/processed/trend_scores.csv")
     buzz_val = Path("data/processed/buzz_validated.csv")
     buzz_cand = Path("data/processed/buzz_candidates.csv")
+    cross = Path("data/processed/cross_region.csv")
 
     if news:
         n = ingest_raw(conn, news, "news_articles")
@@ -212,6 +243,9 @@ def ingest_all(conn: sqlite3.Connection, run_date: str) -> None:
         n = ingest_buzz(conn, buzz, run_date)
         src = "검증본" if buzz is buzz_val else "후보(미검증)"
         print(f"  버즈 {src}: {n}건 스냅샷({run_date})")
+    if cross.exists():
+        n = ingest_cross(conn, cross, run_date)
+        print(f"  지역×음식 크로스: {n}건 스냅샷({run_date})")
 
 
 def summary(conn: sqlite3.Connection) -> None:
@@ -229,6 +263,8 @@ def summary(conn: sqlite3.Connection) -> None:
           f"(실행 {scalar('SELECT COUNT(DISTINCT run_date) FROM trend_snapshot')}회)")
     print(f"  버즈 스냅샷      {scalar('SELECT COUNT(*) FROM buzz_snapshot'):>7,} 행  "
           f"(실행 {scalar('SELECT COUNT(DISTINCT run_date) FROM buzz_snapshot')}회)")
+    print(f"  크로스 스냅샷    {scalar('SELECT COUNT(*) FROM cross_region'):>7,} 행  "
+          f"(실행 {scalar('SELECT COUNT(DISTINCT run_date) FROM cross_region')}회)")
 
     news_span = conn.execute(
         "SELECT MIN(first_seen), MAX(first_seen) FROM news_articles").fetchone()
