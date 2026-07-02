@@ -9,6 +9,9 @@ data/**
 # 모델 캐시
 models/
 
+# 배치 실행 로그
+logs/
+
 # Python
 __pycache__/
 *.pyc

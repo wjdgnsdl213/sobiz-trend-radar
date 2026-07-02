@@ -104,6 +104,29 @@ db (적재 계층)
 
 주간 반복 실행 시 raw 기사/포스트가 링크 기준으로 누적(최초 수집분 보존)되어, 네이버 API의 1,000건 상한·날짜범위 지정 불가 한계를 시간이 해결한다. 필터·트렌드·버즈 파생물은 실행일별 스냅샷으로 쌓여 대시보드 소스가 된다.
 
+**전체 배치 (오케스트레이터):**
+
+수집→처리→적재를 한 번에 실행한다. 각 단계는 기존 독립 모듈을 subprocess로 호출하므로 단계별 독립성은 유지된다(evaluate는 수동 라벨이 필요한 QA라 배치 제외).
+
+```
+python -m src.run_pipeline              # 엔진 A + B 전체 + DB 적재
+python -m src.run_pipeline --only-a     # 엔진 A만
+python -m src.run_pipeline --skip-collect  # 수집 건너뛰고 재처리
+```
+
+### 주간 자동 실행 (Windows 작업 스케줄러)
+
+`run_weekly.bat`이 파이프라인을 실행하고 `logs/pipeline.log`에 로그를 남긴다. 주 1회 등록 예시(매주 월요일 04:00):
+
+```powershell
+schtasks /Create /SC WEEKLY /D MON /ST 04:00 /TN "sobiz-trend-radar-weekly" ^
+  /TR "\"C:\Users\wjdgn\OneDrive\바탕 화면\sojingong\news_keyword\run_weekly.bat\""
+```
+
+등록 확인 `schtasks /Query /TN "sobiz-trend-radar-weekly"`, 즉시 테스트 `schtasks /Run /TN "sobiz-trend-radar-weekly"`, 삭제 `schtasks /Delete /TN "sobiz-trend-radar-weekly" /F`.
+
+> 가상환경(.venv)을 쓰면 `run_weekly.bat`의 `python`을 `.venv\Scripts\python.exe`로 교체한다. 주 1회는 트렌드 스코어가 주 단위라 baseline 축적과 궁합이 맞고 API 부하도 낮다.
+
 ## 설치 및 실행
 
 ```bash
@@ -148,7 +171,9 @@ python -m src.collect
 │   ├── buzz_collect.py        # [B] 네이버 블로그 검색 API 수집
 │   ├── buzz_extract.py        # [B] soynlp 신조어 추출 + kiwi 판별 + 급상승 스코어
 │   ├── buzz_validate.py       # [B] DataLab 검색어트렌드 API로 발굴 후보 교차 검증
-│   └── db.py                  # [공통] 산출물을 SQLite 이력 DB에 누적 적재
+│   ├── db.py                  # [공통] 산출물을 SQLite 이력 DB에 누적 적재
+│   └── run_pipeline.py        # [공통] 수집→처리→적재 전체 배치 오케스트레이터
+├── run_weekly.bat             # 주간 자동 실행용 배치 (작업 스케줄러 등록)
 ├── seeds/
 │   └── seed_sentences.txt     # [A] 소상공인 사업환경 시드 문장 20개
 └── reports/
